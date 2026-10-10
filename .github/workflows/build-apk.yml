@@ -130,6 +130,7 @@ jobs:
           echo "Debug APK verified successfully at $TARGET_APK."
 
       - name: Upload debug APK artifact
+        id: upload_artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
@@ -168,6 +169,8 @@ jobs:
           echo "asset_filename=${RELEASE_FILENAME}" >> "$GITHUB_OUTPUT"
 
       - name: Publish APK to GitHub Releases
+        id: publish_release
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -217,20 +220,96 @@ jobs:
           - The APK is not a Play Store production release.
           - The APK is signed only with a temporary debug keystore.
           EOF
+          sed -i 's/^[[:space:]]*//' "$NOTES_FILE"
 
           echo "Creating GitHub Release with tag: $RELEASE_TAG and title: $RELEASE_TITLE..."
-          if gh release create "$RELEASE_TAG" "$ASSET_PATH" \
+          gh release create "$RELEASE_TAG" "$ASSET_PATH" \
             --target "$GITHUB_SHA" \
             --title "$RELEASE_TITLE" \
             --notes-file "$NOTES_FILE" \
-            --latest; then
-            echo "GitHub Release created successfully."
-            echo "### 🚀 Release Published" >> "$GITHUB_STEP_SUMMARY"
-            echo "Successfully published release **${RELEASE_TITLE}** (\`${RELEASE_TAG}\`) with asset \`${{ steps.prepare_asset.outputs.asset_filename }}\`." >> "$GITHUB_STEP_SUMMARY"
-            echo "Artifact **app-debug-apk** is also preserved in Actions." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning::GitHub Release publishing failed. However, the debug APK build succeeded and is safely stored as an Actions artifact (app-debug-apk)."
-            echo "### ⚠️ Release Publishing Warning" >> "$GITHUB_STEP_SUMMARY"
-            echo "Debug APK build and artifact upload succeeded (**app-debug-apk**), but release publishing failed (check repository permissions or settings)." >> "$GITHUB_STEP_SUMMARY"
-          fi
+            --latest
+
           rm -f "$NOTES_FILE"
+
+      - name: Report APK download result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_TAG="debug-apk-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          RELEASE_TITLE="Debug APK Build #${GITHUB_RUN_NUMBER}"
+          APK_FILENAME="${{ steps.prepare_asset.outputs.asset_filename }}"
+
+          echo "=================================================="
+          echo "          APK BUILD & RELEASE REPORT              "
+          echo "=================================================="
+
+          if [ "${{ steps.publish_release.outcome }}" = "success" ]; then
+            echo "Status: GitHub Release successfully created!"
+            echo "Verifying release using gh release view..."
+            gh release view "$RELEASE_TAG"
+
+            RELEASE_URL=$(gh release view "$RELEASE_TAG" --json url --jq .url 2>/dev/null || echo "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}")
+
+            echo "=== Release Details ==="
+            echo "Release Tag: $RELEASE_TAG"
+            echo "Release Title: $RELEASE_TITLE"
+            echo "Direct Release Page URL: $RELEASE_URL"
+            echo "Exact APK Filename: $APK_FILENAME"
+            echo "Actions Artifact: app-debug-apk is available"
+
+            SUMMARY_FILE=$(mktemp)
+            cat <<EOF > "$SUMMARY_FILE"
+          ## 🚀 Debug APK Released Successfully!
+
+          The debug APK has been published to GitHub Releases and is ready for download:
+
+          - **Release Title:** ${RELEASE_TITLE}
+          - **Release Tag:** \`${RELEASE_TAG}\`
+          - **Release Page:** [${RELEASE_URL}](${RELEASE_URL})
+          - **Direct APK Asset:** \`${APK_FILENAME}\`
+
+          ### 📱 How to Download and Install on your Phone:
+          1. Open the [Release Page](${RELEASE_URL}) in your phone's browser.
+          2. Under **Assets**, tap **\`${APK_FILENAME}\`** to download.
+          3. Tap the downloaded APK and install it (enable "Install unknown apps" for your browser if prompted).
+
+          ### 📦 Actions Artifact
+          The build artifact **app-debug-apk** is also preserved in the workflow summary.
+          EOF
+            sed -i 's/^[[:space:]]*//' "$SUMMARY_FILE"
+            cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
+            rm -f "$SUMMARY_FILE"
+          else
+            echo "::warning::GitHub Release publishing failed or was skipped, but the APK build and artifact upload succeeded."
+            echo "=== Status Summary ==="
+            echo "- Debug APK build: SUCCESS (app/build/outputs/apk/debug/app-debug.apk)"
+            echo "- Actions Artifact: SUCCESS (app-debug-apk is available in Workflow Artifacts)"
+            echo "- GitHub Release: FAILED (see logs above for details)"
+
+            SUMMARY_FILE=$(mktemp)
+            cat <<EOF > "$SUMMARY_FILE"
+          ## ⚠️ Debug APK Build Succeeded (Release Publishing Failed)
+
+          The debug APK was **built successfully** and uploaded as a GitHub Actions artifact:
+          - **Artifact Name:** \`app-debug-apk\` (contains \`app-debug.apk\`)
+          - **Status:** Available immediately in the **Artifacts** section at the bottom of this run summary.
+
+          ### ❓ Why Did Release Publishing Fail?
+          GitHub Releases requires repository write permission for the built-in \`GITHUB_TOKEN\`. In GitHub repositories, workflow permissions often default to read-only.
+          To enable automated releases:
+          1. Open your repository on GitHub.
+          2. Go to **Settings** > **Actions** > **General**.
+          3. Scroll to **Workflow permissions**.
+          4. Select **"Read and write permissions"**.
+          5. Check **"Allow GitHub Actions to create and approve pull requests"** and click **Save**.
+
+          ### 📥 How to Download Your APK Now:
+          1. Scroll down to the **Artifacts** section on this workflow summary page.
+          2. Click **\`app-debug-apk\`** to download the ZIP file.
+          3. Extract the ZIP to get **\`app-debug.apk\`** and transfer/install it on your phone.
+          EOF
+            sed -i 's/^[[:space:]]*//' "$SUMMARY_FILE"
+            cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
+            rm -f "$SUMMARY_FILE"
+          fi
