@@ -13,6 +13,8 @@ import com.example.data.model.SearchHistory
 import com.example.data.model.User
 import com.example.data.model.Video
 import com.example.data.repository.MgRepository
+import com.example.data.repository.UnverifiedEmailException
+import com.google.firebase.auth.FirebaseUser
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +26,13 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
+
+data class VerificationPendingState(
+    val email: String,
+    val username: String = "",
+    val displayName: String = "",
+    val firebaseUser: FirebaseUser? = null
+)
 
 sealed class AppDestination {
     object Splash : AppDestination()
@@ -83,6 +92,9 @@ class MgViewModel(application: Application) : AndroidViewModel(application) {
     fun setLanguage(lang: String) { _selectedLanguage.value = lang }
 
     // --- Auth State ---
+    private val _verificationPending = MutableStateFlow<VerificationPendingState?>(null)
+    val verificationPending: StateFlow<VerificationPendingState?> = _verificationPending.asStateFlow()
+
     val currentUser: StateFlow<User?> = repository.currentUser.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
@@ -327,18 +339,67 @@ class MgViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val result = repository.loginWithEmail(email, pass)
             if (result.isSuccess) {
+                _verificationPending.value = null
+                _currentDestination.value = AppDestination.Main
+            } else {
+                val ex = result.exceptionOrNull()
+                if (ex is UnverifiedEmailException) {
+                    _verificationPending.value = VerificationPendingState(
+                        email = email.trim(),
+                        firebaseUser = ex.firebaseUser
+                    )
+                }
+            }
+            onResult(result)
+        }
+    }
+
+    fun registerWithEmail(email: String, pass: String, username: String, name: String, onResult: (Result<FirebaseUser>) -> Unit) {
+        viewModelScope.launch {
+            val result = repository.registerWithEmail(email, pass, username, name)
+            if (result.isSuccess) {
+                _verificationPending.value = VerificationPendingState(
+                    email = email.trim(),
+                    username = username.trim().removePrefix("@"),
+                    displayName = name.trim(),
+                    firebaseUser = result.getOrNull()
+                )
+            }
+            onResult(result)
+        }
+    }
+
+    fun checkEmailVerification(onResult: (Result<User>) -> Unit) {
+        viewModelScope.launch {
+            val pending = _verificationPending.value
+            val result = repository.checkEmailVerificationStatus(
+                targetUser = pending?.firebaseUser,
+                username = pending?.username ?: "",
+                displayName = pending?.displayName ?: ""
+            )
+            if (result.isSuccess) {
+                _verificationPending.value = null
                 _currentDestination.value = AppDestination.Main
             }
             onResult(result)
         }
     }
 
-    fun registerWithEmail(email: String, pass: String, username: String, name: String, onResult: (Result<User>) -> Unit) {
+    fun resendVerificationEmail(onResult: (Result<Unit>) -> Unit) {
         viewModelScope.launch {
-            val result = repository.registerWithEmail(email, pass, username, name)
-            if (result.isSuccess) {
-                _currentDestination.value = AppDestination.Main
-            }
+            val pending = _verificationPending.value
+            val result = repository.resendVerificationEmail(pending?.firebaseUser)
+            onResult(result)
+        }
+    }
+
+    fun clearVerificationPending() {
+        _verificationPending.value = null
+    }
+
+    fun sendPasswordReset(email: String, onResult: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            val result = repository.sendPasswordResetEmail(email)
             onResult(result)
         }
     }

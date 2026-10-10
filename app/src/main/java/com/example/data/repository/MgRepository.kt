@@ -21,13 +21,25 @@ import kotlinx.coroutines.launch
 import com.example.data.model.UserPresence
 import android.content.Context
 import com.example.R
+import com.example.util.AuthValidator
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseNetworkException
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
+import com.google.firebase.auth.FirebaseAuthUserCollisionException
+import com.google.firebase.auth.FirebaseAuthWeakPasswordException
+import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
+
+class UnverifiedEmailException(
+    message: String,
+    val firebaseUser: FirebaseUser? = null
+) : Exception(message)
 
 class MgRepository(
     private val dao: MgDao,
@@ -44,6 +56,7 @@ class MgRepository(
 
     private val _currentUser = MutableStateFlow<User?>(null)
     val currentUser: Flow<User?> = _currentUser.asStateFlow()
+    val currentUserValue: User? get() = _currentUser.value
 
     // Real-time presence state map for all users
     private val _presenceMap = MutableStateFlow<Map<String, UserPresence>>(
@@ -63,6 +76,27 @@ class MgRepository(
     init {
         CoroutineScope(Dispatchers.IO).launch {
             seedInitialDataIfNeeded()
+            restoreActiveSession()
+        }
+    }
+
+    private suspend fun restoreActiveSession() {
+        try {
+            val currentFbUser = auth?.currentUser ?: return
+            currentFbUser.reload().await()
+            if (currentFbUser.isEmailVerified || currentFbUser.providerData.any { it.providerId == "google.com" }) {
+                loginWithFirebaseUser(currentFbUser)
+            } else {
+                _currentUser.value = null
+            }
+        } catch (e: Exception) {
+            val currentFbUser = auth?.currentUser
+            if (currentFbUser != null && (currentFbUser.isEmailVerified || currentFbUser.providerData.any { it.providerId == "google.com" })) {
+                val localUser = dao.getUserByIdOnce(currentFbUser.uid)
+                if (localUser != null && !localUser.isBanned) {
+                    _currentUser.value = localUser
+                }
+            }
         }
     }
 
@@ -281,16 +315,56 @@ class MgRepository(
     }
 
     suspend fun loginWithEmail(email: String, password: String): Result<User> {
-        val user = dao.getUserByEmail(email)
-        return if (user != null) {
-            if (user.isBanned) {
-                Result.failure(Exception("This account has been suspended by administration."))
-            } else {
-                _currentUser.value = user
-                Result.success(user)
+        val emailValidation = AuthValidator.validateEmail(email)
+        if (!emailValidation.isValid) {
+            return Result.failure(IllegalArgumentException(emailValidation.errorMessage ?: "Invalid email address."))
+        }
+        if (password.isBlank()) {
+            return Result.failure(IllegalArgumentException("Password cannot be blank."))
+        }
+
+        val firebaseAuth = auth
+        if (firebaseAuth != null) {
+            try {
+                val authResult = firebaseAuth.signInWithEmailAndPassword(email.trim(), password).await()
+                val fbUser = authResult.user ?: return Result.failure(IllegalStateException("Authentication succeeded but no user was returned."))
+
+                // Refresh user state to verify latest email verification status
+                fbUser.reload().await()
+
+                if (!fbUser.isEmailVerified && !fbUser.providerData.any { it.providerId == "google.com" }) {
+                    return Result.failure(UnverifiedEmailException("Your email address is not verified yet. Please verify your email before logging in.", fbUser))
+                }
+
+                return loginWithFirebaseUser(fbUser)
+            } catch (e: UnverifiedEmailException) {
+                return Result.failure(e)
+            } catch (e: FirebaseAuthInvalidUserException) {
+                return Result.failure(IllegalStateException("No account found with this email. Please check your email or register."))
+            } catch (e: FirebaseAuthInvalidCredentialsException) {
+                return Result.failure(IllegalArgumentException("Incorrect password or email credentials."))
+            } catch (e: FirebaseNetworkException) {
+                return Result.failure(IllegalStateException("Network connection failed. Please check your internet connection."))
+            } catch (e: Exception) {
+                val localUser = dao.getUserByEmail(email.trim())
+                if (localUser != null && !localUser.isBanned) {
+                    _currentUser.value = localUser
+                    return Result.success(localUser)
+                }
+                return Result.failure(Exception(e.localizedMessage ?: "Sign in failed."))
             }
         } else {
-            Result.failure(Exception("Account not found with this email. Please register first."))
+            val user = dao.getUserByEmail(email.trim())
+            return if (user != null) {
+                if (user.isBanned) {
+                    Result.failure(IllegalStateException("This account has been suspended by administration."))
+                } else {
+                    _currentUser.value = user
+                    Result.success(user)
+                }
+            } else {
+                Result.failure(IllegalStateException("Account not found with this email. Please register first."))
+            }
         }
     }
 
@@ -299,35 +373,133 @@ class MgRepository(
         password: String,
         username: String,
         displayName: String
-    ): Result<User> {
-        val existingEmail = dao.getUserByEmail(email)
-        if (existingEmail != null) {
-            return Result.failure(Exception("An account with this email already exists."))
-        }
-        val existingUsername = dao.getUserByUsername(username)
-        if (existingUsername != null) {
-            val suggestions = generateUsernameSuggestions(username)
-            return Result.failure(Exception("Username already taken. Try: ${suggestions.joinToString(", ")}"))
+    ): Result<FirebaseUser> {
+        val emailValidation = AuthValidator.validateEmail(email)
+        if (!emailValidation.isValid) {
+            return Result.failure(IllegalArgumentException(emailValidation.errorMessage ?: "Invalid email address."))
         }
 
-        val newUser = User(
-            id = UUID.randomUUID().toString(),
-            username = username.trim().removePrefix("@").lowercase(),
-            displayName = displayName.trim().ifBlank { username },
-            email = email.trim(),
-            bio = "LG Creator ⚡️ Create. Discover. Connect.",
-            followersCount = 0,
-            followingCount = 0,
-            videosCount = 0,
-            likesCount = 0,
-            isOnline = true,
-            lastActiveAt = System.currentTimeMillis(),
-            role = if (email == "admin@lg.app" || email.contains("admin")) "ADMIN" else "USER"
-        )
-        dao.insertUser(newUser)
-        _currentUser.value = newUser
-        recordUserHeartbeat(newUser.id)
-        return Result.success(newUser)
+        val usernameValidation = AuthValidator.validateUsername(username)
+        if (!usernameValidation.isValid) {
+            return Result.failure(IllegalArgumentException(usernameValidation.errorMessage ?: "Invalid username."))
+        }
+
+        val passwordValidation = AuthValidator.validatePassword(password)
+        if (!passwordValidation.isValid) {
+            return Result.failure(IllegalArgumentException(passwordValidation.errorMessage ?: "Password does not meet requirements."))
+        }
+
+        val cleanUsername = username.trim().removePrefix("@").lowercase()
+        if (!isUsernameAvailable(cleanUsername)) {
+            val suggestions = generateUsernameSuggestions(cleanUsername)
+            return Result.failure(IllegalStateException("Username already taken. Available options: ${suggestions.joinToString(", ")}"))
+        }
+
+        val firebaseAuth = auth ?: return Result.failure(IllegalStateException("Firebase Authentication service is not initialized."))
+
+        return try {
+            val authResult = firebaseAuth.createUserWithEmailAndPassword(email.trim(), password).await()
+            val fbUser = authResult.user ?: return Result.failure(IllegalStateException("Account creation returned no user record."))
+
+            // Send genuine Firebase email verification link
+            fbUser.sendEmailVerification().await()
+
+            // Pre-seed unverified user locally in Room
+            val unverifiedUser = User(
+                id = fbUser.uid,
+                username = cleanUsername,
+                displayName = displayName.trim().ifBlank { cleanUsername },
+                email = email.trim(),
+                bio = "LG Creator ⚡️ Create. Discover. Connect.",
+                followersCount = 0,
+                followingCount = 0,
+                videosCount = 0,
+                likesCount = 0,
+                isVerified = false,
+                isOnline = false,
+                lastActiveAt = System.currentTimeMillis(),
+                role = if (email.trim() == "admin@lg.app" || email.trim().contains("admin")) "ADMIN" else "USER"
+            )
+            dao.insertUser(unverifiedUser)
+
+            // Do NOT activate session until verified
+            _currentUser.value = null
+
+            Result.success(fbUser)
+        } catch (e: FirebaseAuthUserCollisionException) {
+            Result.failure(IllegalStateException("An account with this email address already exists. Please sign in instead."))
+        } catch (e: FirebaseAuthWeakPasswordException) {
+            Result.failure(IllegalArgumentException(e.localizedMessage ?: "The password is too weak."))
+        } catch (e: FirebaseAuthInvalidCredentialsException) {
+            Result.failure(IllegalArgumentException("Invalid email format or credentials."))
+        } catch (e: FirebaseNetworkException) {
+            Result.failure(IllegalStateException("Network connection failed. Please check your internet connection."))
+        } catch (e: Exception) {
+            Result.failure(Exception(e.localizedMessage ?: "Account registration failed."))
+        }
+    }
+
+    suspend fun checkEmailVerificationStatus(
+        targetUser: FirebaseUser? = null,
+        username: String = "",
+        displayName: String = ""
+    ): Result<User> {
+        val fbUser = targetUser ?: auth?.currentUser ?: return Result.failure(IllegalStateException("No active authentication session. Please sign in."))
+        return try {
+            fbUser.reload().await()
+            if (fbUser.isEmailVerified) {
+                val existing = dao.getUserByIdOnce(fbUser.uid)
+                val cleanUsername = username.trim().removePrefix("@").lowercase().ifBlank { existing?.username ?: "user_${fbUser.uid.take(6)}" }
+                val cleanDisplayName = displayName.trim().ifBlank { existing?.displayName ?: cleanUsername }
+                val verifiedUser = (existing ?: User(
+                    id = fbUser.uid,
+                    username = cleanUsername,
+                    displayName = cleanDisplayName,
+                    email = fbUser.email ?: ""
+                )).copy(
+                    isVerified = true,
+                    isOnline = true,
+                    lastActiveAt = System.currentTimeMillis()
+                )
+                dao.insertUser(verifiedUser)
+                _currentUser.value = verifiedUser
+                recordUserHeartbeat(verifiedUser.id)
+                CoroutineScope(Dispatchers.IO).launch {
+                    createFirestoreUser(verifiedUser)
+                }
+                Result.success(verifiedUser)
+            } else {
+                Result.failure(IllegalStateException("Email is not verified yet. Please check your inbox and tap the verification link, then click 'Check Status'."))
+            }
+        } catch (e: Exception) {
+            Result.failure(Exception(e.localizedMessage ?: "Failed to verify email status."))
+        }
+    }
+
+    suspend fun resendVerificationEmail(targetUser: FirebaseUser? = null): Result<Unit> {
+        val fbUser = targetUser ?: auth?.currentUser ?: return Result.failure(IllegalStateException("No pending registration session found."))
+        return try {
+            fbUser.sendEmailVerification().await()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(Exception(e.localizedMessage ?: "Failed to resend verification email."))
+        }
+    }
+
+    suspend fun sendPasswordResetEmail(email: String): Result<Unit> {
+        val validation = AuthValidator.validateEmail(email)
+        if (!validation.isValid) {
+            return Result.failure(IllegalArgumentException(validation.errorMessage ?: "Invalid email address."))
+        }
+        val firebaseAuth = auth ?: return Result.failure(IllegalStateException("Firebase Auth service not available."))
+        return try {
+            firebaseAuth.sendPasswordResetEmail(email.trim()).await()
+            Result.success(Unit)
+        } catch (e: FirebaseAuthInvalidUserException) {
+            Result.failure(IllegalStateException("No account found with this email address."))
+        } catch (e: Exception) {
+            Result.failure(Exception(e.localizedMessage ?: "Failed to dispatch password recovery link."))
+        }
     }
 
     suspend fun isUsernameAvailable(username: String): Boolean {
@@ -369,6 +541,7 @@ class MgRepository(
         if (user != null) {
             updateUserPresence(user.id, isOnline = false)
         }
+        auth?.signOut()
         _currentUser.value = null
     }
 

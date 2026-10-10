@@ -102,6 +102,10 @@ import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.tasks.await
 
+import androidx.compose.runtime.collectAsState
+import com.example.util.AuthValidator
+import kotlinx.coroutines.delay
+
 @Composable
 fun AuthScreen(
     viewModel: MgViewModel,
@@ -109,21 +113,36 @@ fun AuthScreen(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val verificationPending by viewModel.verificationPending.collectAsState()
+
     var selectedTab by remember { mutableIntStateOf(0) } // 0 = Sign In, 1 = Create Account
 
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
+    var confirmPasswordVisible by remember { mutableStateOf(false) }
 
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var verificationStatusMessage by remember { mutableStateOf<String?>(null) }
+    var resendCooldownSeconds by remember { mutableIntStateOf(0) }
+
     var usernameStatus by remember { mutableStateOf<UsernameStatus>(UsernameStatus.Empty) }
     var usernameSuggestions by remember { mutableStateOf<List<String>>(emptyList()) }
 
     var showGoogleAccountPicker by remember { mutableStateOf(false) }
     var showForgotPasswordDialog by remember { mutableStateOf(false) }
+
+    // Cooldown timer for resending verification email
+    LaunchedEffect(resendCooldownSeconds) {
+        if (resendCooldownSeconds > 0) {
+            delay(1000L)
+            resendCooldownSeconds--
+        }
+    }
 
     // Live username availability check
     LaunchedEffect(username) {
@@ -278,91 +297,219 @@ fun AuthScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // Tab Switcher (Sign In vs Create Account)
-            TabRow(
-                selectedTabIndex = selectedTab,
-                containerColor = MgDarkSurface,
-                contentColor = MgCyan,
-                indicator = { tabPositions ->
-                    TabRowDefaults.SecondaryIndicator(
-                        Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-                        color = MgCyan,
-                        height = 3.dp
-                    )
-                },
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-            ) {
-                Tab(
-                    selected = selectedTab == 0,
-                    onClick = {
+            if (verificationPending != null) {
+                EmailVerificationCard(
+                    email = verificationPending?.email ?: email,
+                    isLoading = isLoading,
+                    resendCooldownSeconds = resendCooldownSeconds,
+                    statusMessage = verificationStatusMessage,
+                    errorMessage = errorMessage,
+                    onCheckStatus = {
+                        isLoading = true
+                        errorMessage = null
+                        verificationStatusMessage = null
+                        viewModel.checkEmailVerification { result ->
+                            isLoading = false
+                            if (result.isSuccess) {
+                                onAuthSuccess()
+                            } else {
+                                errorMessage = result.exceptionOrNull()?.message ?: "Email is not verified yet. Please check your inbox and tap the link."
+                            }
+                        }
+                    },
+                    onResend = {
+                        isLoading = true
+                        errorMessage = null
+                        verificationStatusMessage = null
+                        viewModel.resendVerificationEmail { result ->
+                            isLoading = false
+                            if (result.isSuccess) {
+                                resendCooldownSeconds = 60
+                                verificationStatusMessage = "A fresh verification email was sent! Please check your inbox."
+                            } else {
+                                errorMessage = result.exceptionOrNull()?.message ?: "Failed to resend verification email."
+                            }
+                        }
+                    },
+                    onBackToSignIn = {
+                        viewModel.clearVerificationPending()
                         selectedTab = 0
                         errorMessage = null
-                    },
-                    text = {
-                        Text(
-                            "Sign In",
-                            color = if (selectedTab == 0) Color.White else MgTextSecondary,
-                            fontWeight = FontWeight.Bold
-                        )
+                        verificationStatusMessage = null
                     }
                 )
-                Tab(
-                    selected = selectedTab == 1,
-                    onClick = {
-                        selectedTab = 1
+            } else {
+                // Tab Switcher (Sign In vs Create Account)
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    containerColor = MgDarkSurface,
+                    contentColor = MgCyan,
+                    indicator = { tabPositions ->
+                        TabRowDefaults.SecondaryIndicator(
+                            Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
+                            color = MgCyan,
+                            height = 3.dp
+                        )
+                    },
+                    modifier = Modifier.clip(RoundedCornerShape(12.dp))
+                ) {
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = {
+                            selectedTab = 0
+                            errorMessage = null
+                            verificationStatusMessage = null
+                        },
+                        text = {
+                            Text(
+                                "Sign In",
+                                color = if (selectedTab == 0) Color.White else MgTextSecondary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = {
+                            selectedTab = 1
+                            errorMessage = null
+                            verificationStatusMessage = null
+                        },
+                        text = {
+                            Text(
+                                "Create Account",
+                                color = if (selectedTab == 1) Color.White else MgTextSecondary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Error Banner
+                AnimatedVisibility(visible = errorMessage != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MgHeartRed.copy(alpha = 0.15f))
+                            .border(1.dp, MgHeartRed.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                            .padding(12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = MgHeartRed, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = errorMessage ?: "",
+                                color = MgHeartRed,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+                }
+
+                // Registration specific fields
+                if (selectedTab == 1) {
+                    // Display Name
+                    OutlinedTextField(
+                        value = displayName,
+                        onValueChange = { displayName = it },
+                        label = { Text("Display Name") },
+                        placeholder = { Text("e.g. Alex Rivera") },
+                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, tint = MgTextSecondary) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("reg_display_name"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedContainerColor = MgDarkSurface,
+                            unfocusedContainerColor = MgDarkSurface,
+                            focusedBorderColor = MgCyan,
+                            unfocusedBorderColor = Color(0xFF2B3346)
+                        ),
+                        singleLine = true
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Username with live check
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = { username = it },
+                        label = { Text("Username") },
+                        placeholder = { Text("e.g. alexrivera") },
+                        prefix = { Text("@", color = MgCyan, fontWeight = FontWeight.Bold) },
+                        trailingIcon = {
+                            when (usernameStatus) {
+                                UsernameStatus.Available -> Icon(Icons.Default.CheckCircle, contentDescription = "Available", tint = MgGreen)
+                                UsernameStatus.Taken -> Icon(Icons.Default.Warning, contentDescription = "Taken", tint = MgHeartRed)
+                                else -> null
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("reg_username"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedContainerColor = MgDarkSurface,
+                            unfocusedContainerColor = MgDarkSurface,
+                            focusedBorderColor = if (usernameStatus == UsernameStatus.Taken) MgHeartRed else MgCyan,
+                            unfocusedBorderColor = Color(0xFF2B3346)
+                        ),
+                        singleLine = true
+                    )
+
+                    // Username suggestions if taken
+                    if (usernameStatus == UsernameStatus.Taken && usernameSuggestions.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "Username already taken. Available options:",
+                                color = MgHeartRed,
+                                fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                usernameSuggestions.forEach { suggestion ->
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(MgDarkSurfaceVariant)
+                                            .border(1.dp, MgCyan.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                                            .clickable { username = suggestion }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("@$suggestion", color = MgCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+
+                // Email Field
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = {
+                        email = it
                         errorMessage = null
                     },
-                    text = {
-                        Text(
-                            "Create Account",
-                            color = if (selectedTab == 1) Color.White else MgTextSecondary,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                )
-            }
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // Error Banner
-            AnimatedVisibility(visible = errorMessage != null) {
-                Box(
+                    label = { Text("Email Address") },
+                    placeholder = { Text("name@gmail.com") },
+                    leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, tint = MgTextSecondary) },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MgHeartRed.copy(alpha = 0.15f))
-                        .border(1.dp, MgHeartRed.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-                        .padding(12.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Warning, contentDescription = null, tint = MgHeartRed, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = errorMessage ?: "",
-                            color = MgHeartRed,
-                            fontSize = 13.sp
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(14.dp))
-            }
-
-            // Registration specific fields
-            if (selectedTab == 1) {
-                // Display Name
-                OutlinedTextField(
-                    value = displayName,
-                    onValueChange = { displayName = it },
-                    label = { Text("Display Name") },
-                    placeholder = { Text("e.g. Alex Rivera") },
-                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, tint = MgTextSecondary) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("reg_display_name"),
+                        .testTag("auth_email_field"),
                     shape = RoundedCornerShape(12.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
@@ -376,193 +523,182 @@ fun AuthScreen(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Username with live check
+                // Password Field
                 OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    label = { Text("Username") },
-                    placeholder = { Text("e.g. alexrivera") },
-                    prefix = { Text("@", color = MgCyan, fontWeight = FontWeight.Bold) },
+                    value = password,
+                    onValueChange = {
+                        password = it
+                        errorMessage = null
+                    },
+                    label = { Text("Password") },
+                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = MgTextSecondary) },
                     trailingIcon = {
-                        when (usernameStatus) {
-                            UsernameStatus.Available -> Icon(Icons.Default.CheckCircle, contentDescription = "Available", tint = MgGreen)
-                            UsernameStatus.Taken -> Icon(Icons.Default.Warning, contentDescription = "Taken", tint = MgHeartRed)
-                            else -> null
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                contentDescription = "Toggle password visibility",
+                                tint = MgTextSecondary
+                            )
                         }
                     },
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("reg_username"),
+                        .testTag("auth_password_field"),
                     shape = RoundedCornerShape(12.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = if (selectedTab == 1) ImeAction.Next else ImeAction.Done),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
                         focusedContainerColor = MgDarkSurface,
                         unfocusedContainerColor = MgDarkSurface,
-                        focusedBorderColor = if (usernameStatus == UsernameStatus.Taken) MgHeartRed else MgCyan,
+                        focusedBorderColor = MgCyan,
                         unfocusedBorderColor = Color(0xFF2B3346)
                     ),
                     singleLine = true
                 )
 
-                // Username suggestions if taken
-                if (usernameStatus == UsernameStatus.Taken && usernameSuggestions.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            text = "Username already taken. Available options:",
-                            color = MgHeartRed,
-                            fontSize = 12.sp
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            usernameSuggestions.forEach { suggestion ->
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(MgDarkSurfaceVariant)
-                                        .border(1.dp, MgCyan.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
-                                        .clickable { username = suggestion }
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Text("@$suggestion", color = MgCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                if (selectedTab == 1) {
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Confirm Password Field
+                    OutlinedTextField(
+                        value = confirmPassword,
+                        onValueChange = {
+                            confirmPassword = it
+                            errorMessage = null
+                        },
+                        label = { Text("Confirm Password") },
+                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = MgTextSecondary) },
+                        trailingIcon = {
+                            IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
+                                Icon(
+                                    imageVector = if (confirmPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    contentDescription = "Toggle confirm password visibility",
+                                    tint = MgTextSecondary
+                                )
+                            }
+                        },
+                        visualTransformation = if (confirmPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("reg_confirm_password"),
+                        shape = RoundedCornerShape(12.dp),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedContainerColor = MgDarkSurface,
+                            unfocusedContainerColor = MgDarkSurface,
+                            focusedBorderColor = if (confirmPassword.isNotEmpty() && confirmPassword != password) MgHeartRed else MgCyan,
+                            unfocusedBorderColor = Color(0xFF2B3346)
+                        ),
+                        singleLine = true
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Password requirements guide
+                    PasswordRequirementsGuide(password = password, confirmPassword = confirmPassword)
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                } else {
+                    // Forgot Password link
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = { showForgotPasswordDialog = true }) {
+                            Text("Forgot password?", color = MgCyan, fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                // Submit Button (Sign In or Register)
+                Button(
+                    onClick = {
+                        errorMessage = null
+                        verificationStatusMessage = null
+
+                        if (selectedTab == 0) {
+                            val emailVal = AuthValidator.validateEmail(email)
+                            if (!emailVal.isValid) {
+                                errorMessage = emailVal.errorMessage
+                                return@Button
+                            }
+                            if (password.isBlank()) {
+                                errorMessage = "Please enter your password."
+                                return@Button
+                            }
+
+                            isLoading = true
+                            viewModel.loginWithEmail(email.trim(), password) { result ->
+                                isLoading = false
+                                if (result.isSuccess) {
+                                    onAuthSuccess()
+                                } else {
+                                    val ex = result.exceptionOrNull()
+                                    errorMessage = ex?.message ?: "Login failed."
+                                }
+                            }
+                        } else {
+                            // Strict client-side validation
+                            val emailVal = AuthValidator.validateEmail(email)
+                            if (!emailVal.isValid) {
+                                errorMessage = emailVal.errorMessage
+                                return@Button
+                            }
+                            val usernameVal = AuthValidator.validateUsername(username)
+                            if (!usernameVal.isValid) {
+                                errorMessage = usernameVal.errorMessage
+                                return@Button
+                            }
+                            if (usernameStatus == UsernameStatus.Taken) {
+                                errorMessage = "Username is already taken. Pick an available alternative."
+                                return@Button
+                            }
+                            val passwordVal = AuthValidator.validatePassword(password)
+                            if (!passwordVal.isValid) {
+                                errorMessage = passwordVal.errorMessage
+                                return@Button
+                            }
+                            val confirmVal = AuthValidator.validateConfirmPassword(password, confirmPassword)
+                            if (!confirmVal.isValid) {
+                                errorMessage = confirmVal.errorMessage
+                                return@Button
+                            }
+
+                            isLoading = true
+                            viewModel.registerWithEmail(email.trim(), password, username.trim(), displayName.trim()) { result ->
+                                isLoading = false
+                                if (result.isSuccess) {
+                                    errorMessage = null
+                                    resendCooldownSeconds = 60
+                                    verificationStatusMessage = "A verification email has been dispatched to ${email.trim()}."
+                                } else {
+                                    errorMessage = result.exceptionOrNull()?.message ?: "Registration failed."
                                 }
                             }
                         }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-
-            // Email Field
-            OutlinedTextField(
-                value = email,
-                onValueChange = { email = it },
-                label = { Text("Email Address") },
-                placeholder = { Text("creator@mg.app") },
-                leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, tint = MgTextSecondary) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("auth_email_field"),
-                shape = RoundedCornerShape(12.dp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedContainerColor = MgDarkSurface,
-                    unfocusedContainerColor = MgDarkSurface,
-                    focusedBorderColor = MgCyan,
-                    unfocusedBorderColor = Color(0xFF2B3346)
-                ),
-                singleLine = true
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Password Field
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Password") },
-                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = MgTextSecondary) },
-                trailingIcon = {
-                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                        Icon(
-                            imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                            contentDescription = "Toggle password visibility",
-                            tint = MgTextSecondary
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .testTag("auth_submit_btn"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MgCyan),
+                    enabled = !isLoading
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(color = Color.Black, modifier = Modifier.size(24.dp))
+                    } else {
+                        Text(
+                            text = if (selectedTab == 0) "Sign In to LG" else "Create LG Account",
+                            color = Color.Black,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
                         )
                     }
-                },
-                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("auth_password_field"),
-                shape = RoundedCornerShape(12.dp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedContainerColor = MgDarkSurface,
-                    unfocusedContainerColor = MgDarkSurface,
-                    focusedBorderColor = MgCyan,
-                    unfocusedBorderColor = Color(0xFF2B3346)
-                ),
-                singleLine = true
-            )
-
-            if (selectedTab == 0) {
-                // Forgot Password link
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    TextButton(onClick = { showForgotPasswordDialog = true }) {
-                        Text("Forgot password?", color = MgCyan, fontSize = 12.sp)
-                    }
-                }
-            } else {
-                Spacer(modifier = Modifier.height(18.dp))
-            }
-
-            // Submit Button (Sign In or Register)
-            Button(
-                onClick = {
-                    if (email.isBlank() || password.isBlank()) {
-                        errorMessage = "Please enter your email and password."
-                        return@Button
-                    }
-                    isLoading = true
-                    errorMessage = null
-
-                    if (selectedTab == 0) {
-                        viewModel.loginWithEmail(email.trim(), password) { result ->
-                            isLoading = false
-                            if (result.isSuccess) {
-                                onAuthSuccess()
-                            } else {
-                                errorMessage = result.exceptionOrNull()?.message ?: "Login failed."
-                            }
-                        }
-                    } else {
-                        if (username.isBlank()) {
-                            errorMessage = "Please choose a username."
-                            isLoading = false
-                            return@Button
-                        }
-                        if (usernameStatus == UsernameStatus.Taken) {
-                            errorMessage = "Username is already taken. Pick an available alternative."
-                            isLoading = false
-                            return@Button
-                        }
-                        viewModel.registerWithEmail(email.trim(), password, username.trim(), displayName.trim()) { result ->
-                            isLoading = false
-                            if (result.isSuccess) {
-                                onAuthSuccess()
-                            } else {
-                                errorMessage = result.exceptionOrNull()?.message ?: "Registration failed."
-                            }
-                        }
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("auth_submit_btn"),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MgCyan),
-                enabled = !isLoading
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(color = Color.Black, modifier = Modifier.size(24.dp))
-                } else {
-                    Text(
-                        text = if (selectedTab == 0) "Sign In to MG" else "Create MG Account",
-                        color = Color.Black,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
-                    )
                 }
             }
 
@@ -600,7 +736,7 @@ fun AuthScreen(
 
                         OutlinedButton(
                             onClick = {
-                                viewModel.loginWithGoogle("admin@mg.app", "MG Platform Admin") { onAuthSuccess() }
+                                viewModel.loginWithGoogle("admin@lg.app", "LG Platform Admin") { onAuthSuccess() }
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(8.dp)
@@ -629,7 +765,7 @@ fun AuthScreen(
                             onAuthSuccess()
                         }
                     }
-                    GoogleAccountRow("creator.mg@gmail.com", "MG Creator") {
+                    GoogleAccountRow("creator.lg@gmail.com", "LG Creator") {
                         showGoogleAccountPicker = false
                         viewModel.loginWithGoogle("creator.lg@gmail.com", "LG Creator") {
                             onAuthSuccess()
@@ -650,6 +786,8 @@ fun AuthScreen(
     if (showForgotPasswordDialog) {
         var resetEmail by remember { mutableStateOf(email) }
         var resetSent by remember { mutableStateOf(false) }
+        var resetError by remember { mutableStateOf<String?>(null) }
+        var isResetting by remember { mutableStateOf(false) }
 
         AlertDialog(
             onDismissRequest = { showForgotPasswordDialog = false },
@@ -674,12 +812,20 @@ fun AuthScreen(
                         Spacer(modifier = Modifier.height(12.dp))
                         OutlinedTextField(
                             value = resetEmail,
-                            onValueChange = { resetEmail = it },
+                            onValueChange = {
+                                resetEmail = it
+                                resetError = null
+                            },
                             label = { Text("Email Address") },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(8.dp),
-                            singleLine = true
+                            singleLine = true,
+                            isError = resetError != null
                         )
+                        if (resetError != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(resetError ?: "", color = MgHeartRed, fontSize = 12.sp)
+                        }
                     }
                 }
             },
@@ -687,11 +833,30 @@ fun AuthScreen(
                 if (!resetSent) {
                     Button(
                         onClick = {
-                            if (resetEmail.isNotBlank()) resetSent = true
+                            val validation = AuthValidator.validateEmail(resetEmail)
+                            if (!validation.isValid) {
+                                resetError = validation.errorMessage
+                                return@Button
+                            }
+                            isResetting = true
+                            resetError = null
+                            viewModel.sendPasswordReset(resetEmail.trim()) { res ->
+                                isResetting = false
+                                if (res.isSuccess) {
+                                    resetSent = true
+                                } else {
+                                    resetError = res.exceptionOrNull()?.message ?: "Failed to send reset link."
+                                }
+                            }
                         },
+                        enabled = !isResetting,
                         colors = ButtonDefaults.buttonColors(containerColor = MgCyan)
                     ) {
-                        Text("Send Link", color = Color.Black, fontWeight = FontWeight.Bold)
+                        if (isResetting) {
+                            CircularProgressIndicator(color = Color.Black, modifier = Modifier.size(16.dp))
+                        } else {
+                            Text("Send Link", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
                     }
                 } else {
                     Button(
@@ -791,5 +956,211 @@ fun onGoogleSignInClicked(
             Log.e("Auth", "Google Sign-In failed", e)
             onAuthError(e.localizedMessage ?: "Sign in failed")
         }
+    }
+}
+
+@Composable
+private fun EmailVerificationCard(
+    email: String,
+    isLoading: Boolean,
+    resendCooldownSeconds: Int,
+    statusMessage: String?,
+    errorMessage: String?,
+    onCheckStatus: () -> Unit,
+    onResend: () -> Unit,
+    onBackToSignIn: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MgDarkSurface)
+            .border(1.dp, MgCyan.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+            .padding(20.dp)
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(MgCyan.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Email,
+                    contentDescription = null,
+                    tint = MgCyan,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Text(
+                text = "Verify Your Email",
+                color = Color.White,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "A genuine Firebase verification email has been sent to:",
+                color = MgTextSecondary,
+                fontSize = 13.sp,
+                lineHeight = 18.sp
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MgDarkSurfaceVariant)
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    text = email,
+                    color = MgCyan,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Text(
+                text = "Please open the verification link in your email inbox to activate your account. Once verified, tap the button below.",
+                color = MgTextMuted,
+                fontSize = 12.sp,
+                lineHeight = 16.sp
+            )
+
+            if (statusMessage != null) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = statusMessage,
+                    color = MgGreen,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            if (errorMessage != null) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = errorMessage,
+                    color = MgHeartRed,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Check Status Button
+            Button(
+                onClick = onCheckStatus,
+                enabled = !isLoading,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("check_verification_btn"),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MgCyan)
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(color = Color.Black, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Check Verification Status", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Resend Email Button
+            OutlinedButton(
+                onClick = onResend,
+                enabled = !isLoading && resendCooldownSeconds == 0,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("resend_verification_btn"),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                val buttonText = if (resendCooldownSeconds > 0) {
+                    "Resend in ${resendCooldownSeconds}s"
+                } else {
+                    "Resend Verification Email"
+                }
+                Text(buttonText, color = if (resendCooldownSeconds == 0) MgCyan else MgTextMuted, fontSize = 13.sp)
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            TextButton(onClick = onBackToSignIn) {
+                Text("Back to Sign In", color = MgTextSecondary, fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PasswordRequirementsGuide(password: String, confirmPassword: String) {
+    val lengthOk = password.length in 8..64
+    val uppercaseOk = password.any { it.isUpperCase() }
+    val lowercaseOk = password.any { it.isLowerCase() }
+    val digitOk = password.any { it.isDigit() }
+    val specialOk = password.any { !it.isLetterOrDigit() }
+    val matchOk = password.isNotEmpty() && password == confirmPassword
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MgDarkSurfaceVariant.copy(alpha = 0.6f))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text("Password Requirements:", color = MgTextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            RequirementItem(label = "8-64 chars", satisfied = lengthOk)
+            RequirementItem(label = "Uppercase (A-Z)", satisfied = uppercaseOk)
+            RequirementItem(label = "Lowercase (a-z)", satisfied = lowercaseOk)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            RequirementItem(label = "Number (0-9)", satisfied = digitOk)
+            RequirementItem(label = "Special (!@#$)", satisfied = specialOk)
+            if (confirmPassword.isNotEmpty()) {
+                RequirementItem(label = "Passwords match", satisfied = matchOk)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RequirementItem(label: String, satisfied: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(if (satisfied) MgGreen else MgTextMuted)
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = label,
+            color = if (satisfied) MgGreen else MgTextMuted,
+            fontSize = 10.sp,
+            fontWeight = if (satisfied) FontWeight.Bold else FontWeight.Normal
+        )
     }
 }
