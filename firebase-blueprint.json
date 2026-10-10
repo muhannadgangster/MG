@@ -1,0 +1,149 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile in the LG liquid glass social platform",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string", "description": "Unique username" },
+        "displayName": { "type": "string", "description": "Display name" },
+        "email": { "type": "string", "description": "User email address" },
+        "avatarUrl": { "type": "string", "description": "Avatar image URL" },
+        "bio": { "type": "string", "description": "Bio description" },
+        "followersCount": { "type": "integer", "description": "Follower count" },
+        "followingCount": { "type": "integer", "description": "Following count" },
+        "videosCount": { "type": "integer", "description": "Number of uploaded videos" },
+        "likesCount": { "type": "integer", "description": "Total received likes" },
+        "isVerified": { "type": "boolean", "description": "Verification badge" },
+        "isPrivate": { "type": "boolean", "description": "Private account indicator" },
+        "allowComments": { "type": "boolean", "description": "Allow comments flag" },
+        "allowMessages": { "type": "boolean", "description": "Allow direct messages flag" },
+        "allowDownloads": { "type": "boolean", "description": "Allow downloads flag" },
+        "role": { "type": "string", "enum": ["USER", "ADMIN"], "description": "Account role" },
+        "isBanned": { "type": "boolean", "description": "Banned flag" },
+        "isOnline": { "type": "boolean", "description": "Presence online flag" },
+        "lastActiveAt": { "type": "string", "format": "date-time", "description": "Last active timestamp" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Account creation timestamp" }
+      },
+      "required": ["username", "displayName", "email"]
+    },
+    "Video": {
+      "title": "Video",
+      "description": "Short-form video published on the LG liquid glass platform",
+      "type": "object",
+      "properties": {
+        "creatorId": { "type": "string", "description": "User ID of creator" },
+        "creatorUsername": { "type": "string", "description": "Username of creator" },
+        "creatorDisplayName": { "type": "string", "description": "Display name of creator" },
+        "creatorAvatar": { "type": "string", "description": "Avatar URL of creator" },
+        "videoUrl": { "type": "string", "description": "Video stream / resource URL" },
+        "thumbnailUrl": { "type": "string", "description": "Thumbnail preview URL" },
+        "title": { "type": "string", "description": "Video title" },
+        "description": { "type": "string", "description": "Video description" },
+        "hashtags": { "type": "string", "description": "Space or comma-separated hashtags" },
+        "audioTitle": { "type": "string", "description": "Background audio track name" },
+        "audioArtist": { "type": "string", "description": "Audio track artist" },
+        "views": { "type": "integer", "description": "Total view count" },
+        "likes": { "type": "integer", "description": "Total like count" },
+        "comments": { "type": "integer", "description": "Total comments count" },
+        "shares": { "type": "integer", "description": "Total share count" },
+        "saves": { "type": "integer", "description": "Total bookmark count" },
+        "visibility": { "type": "string", "enum": ["PUBLIC", "FOLLOWERS", "PRIVATE"], "description": "Visibility setting" },
+        "commentsEnabled": { "type": "boolean", "description": "Allow comments on video" },
+        "downloadsEnabled": { "type": "boolean", "description": "Allow video download" },
+        "remixEnabled": { "type": "boolean", "description": "Allow liquid remix" },
+        "status": { "type": "string", "description": "Draft or published status" },
+        "moderationStatus": { "type": "string", "enum": ["APPROVED", "PENDING", "REJECTED", "RESTRICTED"], "description": "Moderation status" },
+        "durationSeconds": { "type": "integer", "description": "Video duration in seconds" },
+        "gradientStart": { "type": "integer", "description": "Liquid glass background gradient start color" },
+        "gradientEnd": { "type": "integer", "description": "Liquid glass background gradient end color" },
+        "category": { "type": "string", "description": "Video category" },
+        "isPinned": { "type": "boolean", "description": "Pinned status on profile" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Upload timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp" }
+      },
+      "required": ["creatorId", "title", "category"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "User comment on an LG video",
+      "type": "object",
+      "properties": {
+        "videoId": { "type": "string", "description": "Target video ID" },
+        "userId": { "type": "string", "description": "Comment author user ID" },
+        "username": { "type": "string", "description": "Author username" },
+        "userAvatar": { "type": "string", "description": "Author avatar URL" },
+        "text": { "type": "string", "description": "Comment message content" },
+        "likesCount": { "type": "integer", "description": "Comment like counter" },
+        "parentCommentId": { "type": "string", "description": "Optional parent comment ID for replies" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["videoId", "userId", "text"]
+    },
+    "VideoLike": {
+      "title": "VideoLike",
+      "description": "Like record associating a user and video",
+      "type": "object",
+      "properties": {
+        "videoId": { "type": "string", "description": "Liked video ID" },
+        "userId": { "type": "string", "description": "Liking user ID" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Like timestamp" }
+      },
+      "required": ["videoId", "userId"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Direct chat message between two users",
+      "type": "object",
+      "properties": {
+        "conversationId": { "type": "string", "description": "Conversation thread ID" },
+        "senderId": { "type": "string", "description": "Message sender user ID" },
+        "receiverId": { "type": "string", "description": "Message receiver user ID" },
+        "senderUsername": { "type": "string", "description": "Message sender username" },
+        "text": { "type": "string", "description": "Message text" },
+        "sharedVideoId": { "type": "string", "description": "Optional attached video ID" },
+        "isRead": { "type": "boolean", "description": "Read receipt" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Send timestamp" }
+      },
+      "required": ["conversationId", "senderId", "receiverId", "text"]
+    },
+    "UserPresence": {
+      "title": "UserPresence",
+      "description": "Real-time presence tracking heartbeat document",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "User ID" },
+        "isOnline": { "type": "boolean", "description": "Online or offline indicator" },
+        "lastSeenTimestamp": { "type": "string", "format": "date-time", "description": "Last heartbeat timestamp" },
+        "customStatus": { "type": "string", "description": "Custom status message" }
+      },
+      "required": ["userId", "isOnline"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles indexed by UID"
+    },
+    "/videos/{videoId}": {
+      "schema": { "$ref": "#/entities/Video" },
+      "description": "All public and creator videos"
+    },
+    "/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/Comment" },
+      "description": "Video comments collection"
+    },
+    "/video_likes/{likeId}": {
+      "schema": { "$ref": "#/entities/VideoLike" },
+      "description": "Video likes records indexed by {videoId}_{userId}"
+    },
+    "/chat_messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Direct messages between users"
+    },
+    "/presence/{userId}": {
+      "schema": { "$ref": "#/entities/UserPresence" },
+      "description": "Real-time user presence heartbeats"
+    }
+  }
+}

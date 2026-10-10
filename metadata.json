@@ -1,0 +1,6 @@
+{
+  "name": "LG",
+  "description": "Next-generation liquid glass social video platform. Create. Discover. Connect.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
